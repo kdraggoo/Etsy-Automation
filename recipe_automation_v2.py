@@ -701,6 +701,11 @@ class RecipeProcessor:
         - Number of steps
         - Typical cooking methods mentioned
         
+        IMPORTANT: Always use standardized formats:
+        - servings: Use "X servings" for general recipes, "X cookies/bars" for cookies, "1 loaf/cake" for breads/cakes
+        - prep_time: Always include "minutes" or "hours" (e.g., "20 minutes", "1 hour")
+        - cook_time: Always include "minutes" or "hours" (e.g., "45 minutes", "1 hour")
+        
         Return only valid JSON: {{"servings": "X servings", "prep_time": "X minutes", "cook_time": "X minutes"}}
         """
         
@@ -718,13 +723,51 @@ class RecipeProcessor:
         except Exception as e:
             logger.error(f"❌ JSON parsing failed for AI estimation: {e}")
         
-        # Fallback estimates
-        logger.info("🔄 Using fallback estimates")
-        return {
-            "servings": "8 servings",
-            "prep_time": "20 minutes", 
-            "cook_time": "30 minutes"
-        }
+        # Fallback estimates based on recipe type
+        logger.info("🔄 Using fallback estimates based on recipe type")
+        
+        # Analyze recipe title and ingredients to determine type
+        title_lower = recipe_data['title'].lower()
+        ingredients_text = ' '.join(ingredients).lower()
+        
+        # Determine recipe type for better fallback estimates
+        if any(word in title_lower for word in ['cookie', 'cookies']):
+            return {
+                "servings": "24 cookies",
+                "prep_time": "15 minutes", 
+                "cook_time": "12 minutes"
+            }
+        elif any(word in title_lower for word in ['cake', 'bread']):
+            return {
+                "servings": "8 servings",
+                "prep_time": "20 minutes", 
+                "cook_time": "45 minutes"
+            }
+        elif any(word in title_lower for word in ['pie', 'tart']):
+            return {
+                "servings": "8 servings",
+                "prep_time": "30 minutes", 
+                "cook_time": "1 hour"
+            }
+        elif any(word in title_lower for word in ['brownie', 'brownies']):
+            return {
+                "servings": "16 brownies",
+                "prep_time": "15 minutes", 
+                "cook_time": "25 minutes"
+            }
+        elif any(word in title_lower for word in ['bar', 'bars']):
+            return {
+                "servings": "16 bars",
+                "prep_time": "15 minutes", 
+                "cook_time": "25 minutes"
+            }
+        else:
+            # Default fallback
+            return {
+                "servings": "8 servings",
+                "prep_time": "20 minutes", 
+                "cook_time": "30 minutes"
+            }
 
     def generate_tags(self, recipe_data, description):
         """Generate Etsy tags"""
@@ -1009,12 +1052,50 @@ Suggested Price: $4.99
             # Merge estimated details with original data
             # Use estimated values if original values are missing, None, or "Unknown"
             def use_estimated_if_needed(original, estimated, field_name):
-                if not original or original == "Unknown":
-                    logger.info(f"📊 Using AI-estimated {field_name}: {estimated}")
-                    return estimated
-                else:
+                """Check if original value is meaningful or should be replaced with estimated value"""
+                
+                # Helper function to check if a value contains meaningful content
+                def is_meaningful(value):
+                    if not value:
+                        return False
+                    
+                    # Convert to string and normalize
+                    value_str = str(value).strip().lower()
+                    
+                    # Check for common "unknown" or empty patterns
+                    unknown_patterns = [
+                        'unknown', 'not mentioned', 'n/a', 'none', 'unspecified',
+                        'not specified', 'not given', 'missing', 'blank', '',
+                        'null', 'undefined', 'tbd', 'to be determined'
+                    ]
+                    
+                    if value_str in unknown_patterns:
+                        return False
+                    
+                    # Check if it contains meaningful content (numbers, units, descriptive words)
+                    # For servings: should contain numbers or descriptive words like "servings", "cookies", "loaf"
+                    # For times: should contain numbers and time units
+                    if field_name == 'servings':
+                        # Check for numbers or descriptive serving terms
+                        has_numbers = any(char.isdigit() for char in value_str)
+                        has_serving_terms = any(term in value_str for term in ['serving', 'cookie', 'slice', 'piece', 'loaf', 'cake', 'bar', 'cup', 'portion'])
+                        return has_numbers or has_serving_terms
+                    
+                    elif field_name in ['prep_time', 'cook_time']:
+                        # Check for numbers and time units
+                        has_numbers = any(char.isdigit() for char in value_str)
+                        has_time_units = any(unit in value_str for unit in ['minute', 'hour', 'second', 'min', 'hr', 'sec'])
+                        return has_numbers and has_time_units
+                    
+                    # Default: if it's not obviously "unknown", consider it meaningful
+                    return True
+                
+                if is_meaningful(original):
                     logger.info(f"📊 Using original {field_name}: {original}")
                     return original
+                else:
+                    logger.info(f"📊 Using AI-estimated {field_name}: {estimated}")
+                    return estimated
             
             recipe_data['servings'] = use_estimated_if_needed(
                 recipe_data.get('servings'), 
@@ -1368,6 +1449,11 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
     
+    # Validate argument combinations
+    if args.images_only and args.force_reprocess:
+        print("⚠️  Warning: --force-reprocess is ignored when using --images-only mode")
+        print("   Images-only mode only generates images for already processed recipes")
+    
     # Set up logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -1477,6 +1563,7 @@ def main():
     elif args.images_only:
         # Generate images only for processed recipes
         print("🖼️  Generating images for processed recipes...")
+        # Force reprocess flag should not affect images-only mode
         processor.generate_images_for_processed_recipes(
             batch_size=args.batch_size,
             limit=args.limit
