@@ -875,40 +875,125 @@ class RecipeProcessor:
         
         return product_dir, slug, unique_id
     
-    def generate_product_images(self, recipe_data, product_dir, slug, image_path=None):
-        """Generate finished product and serving images"""
+    def generate_coordinated_image_prompts(self, recipe_data):
+        """Use AI to analyze recipe and generate coordinated image prompts"""
+        
+        # Ensure ingredients and instructions are strings
+        def stringify(item):
+            if isinstance(item, dict):
+                if 'ingredient' in item and 'quantity' in item:
+                    return f"{item['quantity']} {item['ingredient']}"
+                elif 'ingredient' in item:
+                    return item['ingredient']
+                elif 'quantity' in item:
+                    return item['quantity']
+                else:
+                    return next(iter(item.values()), str(item))
+            return str(item)
+
+        ingredients = [stringify(ing) for ing in recipe_data.get('ingredients', [])]
+        instructions = [stringify(inst) for inst in recipe_data.get('instructions', [])]
+        
+        # Give AI the full recipe context
+        prompt = f"""
+        Analyze this recipe and create two coordinated image prompts for professional food photography.
+        
+        Recipe Title: {recipe_data['title']}
+        Servings: {recipe_data.get('servings', 'Unknown')}
+        Prep Time: {recipe_data.get('prep_time', 'Unknown')}
+        Cook Time: {recipe_data.get('cook_time', 'Unknown')}
+        
+        Ingredients:
+        {chr(10).join([f"- {ingredient}" for ingredient in ingredients])}
+        
+        Instructions:
+        {chr(10).join([f"{i+1}. {instruction}" for i, instruction in enumerate(instructions)])}
+        
+        Create two coordinated image prompts:
+        
+        1. MAIN IMAGE (finished product): Professional food photography of the complete recipe fresh out of the oven
+        2. SERVING IMAGE (individual portion): Close-up of a single serving that visually matches the main image
+        
+        Both images should:
+        - Have consistent styling, lighting, and aesthetic
+        - Show the same recipe with the same visual characteristics
+        - Use vintage/rustic presentation
+        - Be high quality with no text or watermarks
+        - Include specific visual details based on the recipe ingredients and cooking method
+        
+        Return as JSON:
+        {{
+            "main_image": "detailed prompt for main image",
+            "serving_image": "detailed prompt for serving image"
+        }}
+        """
+        
+        response = self.ask_gpt(prompt)
+        logger.info(f"🤖 AI image prompt generation response: {response[:200]}...")
+        
         try:
-            # Generate finished product image
-            finished_prompt = f"""
-            Professional food photography of {recipe_data['title']}, beautifully presented on a rustic wooden table with natural lighting, 
-            vintage aesthetic, warm colors, appetizing appearance, high quality, no text or watermarks
-            """
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                prompts = json.loads(json_match.group())
+                logger.info(f"✅ AI-generated coordinated prompts successfully")
+                return prompts['main_image'], prompts['serving_image']
+            else:
+                logger.warning("❌ No JSON found in AI image prompt response")
+        except Exception as e:
+            logger.error(f"❌ JSON parsing failed for AI image prompts: {e}")
+        
+        # Fallback to basic prompts
+        return self.generate_fallback_prompts(recipe_data)
+    
+    def generate_fallback_prompts(self, recipe_data):
+        """Generate fallback prompts when AI analysis fails"""
+        logger.info("🔄 Using fallback image prompts")
+        
+        main_prompt = f"""
+        Professional food photography of {recipe_data['title']}, beautifully presented on a rustic wooden table with natural lighting, 
+        vintage aesthetic, warm colors, appetizing appearance, high quality, no text or watermarks
+        """
+        
+        serving_prompt = f"""
+        Close-up photography of a single serving of {recipe_data['title']}, elegantly plated on a vintage dish, 
+        soft natural lighting, appetizing presentation, high quality, no text or watermarks
+        """
+        
+        return main_prompt, serving_prompt
+    
+    def generate_coordinated_images(self, recipe_data, product_dir, slug, image_path=None):
+        """Generate coordinated images using AI analysis"""
+        try:
+            # Get AI-generated coordinated prompts
+            main_prompt, serving_prompt = self.generate_coordinated_image_prompts(recipe_data)
             
+            logger.info(f"🎨 AI-generated main image prompt: {main_prompt[:100]}...")
+            logger.info(f"🎨 AI-generated serving image prompt: {serving_prompt[:100]}...")
+            
+            # Generate main image
             finished_image_path = os.path.join(product_dir, "image-main.png")
-            success1 = self.generate_image(finished_prompt, finished_image_path)
+            success1 = self.generate_image(main_prompt, finished_image_path)
             
-            # Generate single serving image
-            serving_prompt = f"""
-            Close-up photography of a single serving of {recipe_data['title']}, elegantly plated on a vintage dish, 
-            soft natural lighting, appetizing presentation, high quality, no text or watermarks
-            """
-            
+            # Generate serving image
             serving_image_path = os.path.join(product_dir, "image-served.png")
             success2 = self.generate_image(serving_prompt, serving_image_path)
             
             if success1 and success2:
-                logger.info(f"🖼️  Product images generated for {recipe_data['title']}")
-                # Mark images as generated in tracking file
+                logger.info(f"🖼️  Coordinated images generated for {recipe_data['title']}")
                 if image_path:
                     self.mark_images_generated(image_path)
                 return True
             else:
-                logger.error(f"❌ Some images failed to generate for {recipe_data['title']}")
+                logger.error(f"❌ Some coordinated images failed for {recipe_data['title']}")
                 return False
-            
+                
         except Exception as e:
-            logger.error(f"Image generation failed: {e}")
+            logger.error(f"Coordinated image generation failed: {e}")
             return False
+    
+    def generate_product_images(self, recipe_data, product_dir, slug, image_path=None):
+        """Generate finished product and serving images using AI coordination"""
+        return self.generate_coordinated_images(recipe_data, product_dir, slug, image_path)
     
     def save_content_files(self, product_dir, recipe_data, description, social_content, tags, nutrition, allergies, diet_info):
         """Save all content files to product directory"""
