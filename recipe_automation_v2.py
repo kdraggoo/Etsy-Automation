@@ -82,16 +82,32 @@ class RecipeProcessor:
         except Exception as e:
             logger.error(f"Could not save processed images log: {e}")
     
-    def mark_image_processed(self, image_path, recipe_title, success=True):
+    def mark_image_processed(self, image_path, recipe_title, success=True, images_generated=False):
         """Mark an image as processed"""
         image_name = os.path.basename(image_path)
         self.processed_images[image_name] = {
             'processed_at': datetime.now().isoformat(),
             'recipe_title': recipe_title,
             'success': success,
-            'ocr_method': self.ocr_method
+            'ocr_method': self.ocr_method,
+            'images_generated': images_generated
         }
         self.save_processed_images()
+    
+    def mark_images_generated(self, image_path):
+        """Mark that images have been generated for this recipe"""
+        image_name = os.path.basename(image_path)
+        if image_name in self.processed_images:
+            self.processed_images[image_name]['images_generated'] = True
+            self.save_processed_images()
+            logger.info(f"📸 Marked images as generated for {image_name}")
+    
+    def has_images_generated(self, image_path):
+        """Check if images have been generated for this recipe"""
+        image_name = os.path.basename(image_path)
+        if image_name in self.processed_images:
+            return self.processed_images[image_name].get('images_generated', False)
+        return False
     
     def is_image_processed(self, image_path):
         """Check if an image has already been processed"""
@@ -678,15 +694,21 @@ class RecipeProcessor:
         """
         
         response = self.ask_gpt(prompt)
+        logger.info(f"🤖 AI estimation response: {response[:200]}...")
+        
         try:
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 estimated = json.loads(json_match.group())
+                logger.info(f"✅ AI estimation successful: {estimated}")
                 return estimated
-        except:
-            pass
+            else:
+                logger.warning("❌ No JSON found in AI estimation response")
+        except Exception as e:
+            logger.error(f"❌ JSON parsing failed for AI estimation: {e}")
         
         # Fallback estimates
+        logger.info("🔄 Using fallback estimates")
         return {
             "servings": "8 servings",
             "prep_time": "20 minutes", 
@@ -799,7 +821,7 @@ class RecipeProcessor:
         
         return product_dir, slug, unique_id
     
-    def generate_product_images(self, recipe_data, product_dir, slug):
+    def generate_product_images(self, recipe_data, product_dir, slug, image_path=None):
         """Generate finished product and serving images"""
         try:
             # Generate finished product image
@@ -809,7 +831,7 @@ class RecipeProcessor:
             """
             
             finished_image_path = os.path.join(product_dir, "image-main.png")
-            self.generate_image(finished_prompt, finished_image_path)
+            success1 = self.generate_image(finished_prompt, finished_image_path)
             
             # Generate single serving image
             serving_prompt = f"""
@@ -818,10 +840,17 @@ class RecipeProcessor:
             """
             
             serving_image_path = os.path.join(product_dir, "image-served.png")
-            self.generate_image(serving_prompt, serving_image_path)
+            success2 = self.generate_image(serving_prompt, serving_image_path)
             
-            logger.info(f"🖼️  Product images generated for {recipe_data['title']}")
-            return True
+            if success1 and success2:
+                logger.info(f"🖼️  Product images generated for {recipe_data['title']}")
+                # Mark images as generated in tracking file
+                if image_path:
+                    self.mark_images_generated(image_path)
+                return True
+            else:
+                logger.error(f"❌ Some images failed to generate for {recipe_data['title']}")
+                return False
             
         except Exception as e:
             logger.error(f"Image generation failed: {e}")
@@ -967,9 +996,30 @@ Suggested Price: $4.99
             estimated_details = self.estimate_recipe_details(recipe_data)
             
             # Merge estimated details with original data
-            recipe_data['servings'] = recipe_data.get('servings') or estimated_details.get('servings', 'Unknown')
-            recipe_data['prep_time'] = recipe_data.get('prep_time') or estimated_details.get('prep_time', 'Unknown')
-            recipe_data['cook_time'] = recipe_data.get('cook_time') or estimated_details.get('cook_time', 'Unknown')
+            # Use estimated values if original values are missing, None, or "Unknown"
+            def use_estimated_if_needed(original, estimated, field_name):
+                if not original or original == "Unknown":
+                    logger.info(f"📊 Using AI-estimated {field_name}: {estimated}")
+                    return estimated
+                else:
+                    logger.info(f"📊 Using original {field_name}: {original}")
+                    return original
+            
+            recipe_data['servings'] = use_estimated_if_needed(
+                recipe_data.get('servings'), 
+                estimated_details.get('servings', 'Unknown'), 
+                'servings'
+            )
+            recipe_data['prep_time'] = use_estimated_if_needed(
+                recipe_data.get('prep_time'), 
+                estimated_details.get('prep_time', 'Unknown'), 
+                'prep_time'
+            )
+            recipe_data['cook_time'] = use_estimated_if_needed(
+                recipe_data.get('cook_time'), 
+                estimated_details.get('cook_time', 'Unknown'), 
+                'cook_time'
+            )
             
             # Generate content
             description = self.generate_recipe_description(recipe_data)
@@ -991,7 +1041,7 @@ Suggested Price: $4.99
             
             # Generate product images (only if requested)
             if generate_images:
-                self.generate_product_images(recipe_data, product_dir, slug)
+                self.generate_product_images(recipe_data, product_dir, slug, image_path)
             else:
                 logger.info(f"🖼️  Skipping image generation (use --generate-images to enable)")
             
@@ -1040,6 +1090,144 @@ Suggested Price: $4.99
         
         logger.info(f"🎉 Processing complete! Processed: {self.processed_count}, Failed: {self.failed_count}")
     
+    def generate_images_for_processed_recipes(self, batch_size=None, limit=None):
+        """Generate images only for recipes that have been processed but don't have images yet"""
+        if batch_size is None:
+            batch_size = BATCH_SIZE
+        
+        image_files = sorted([f for f in os.listdir(IMAGE_DIR) 
+                            if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
+        
+        # Filter for images that have been processed but don't have images generated
+        images_needing_images = []
+        for img_file in image_files:
+            img_path = os.path.join(IMAGE_DIR, img_file)
+            if self.is_image_processed(img_path) and not self.has_images_generated(img_path):
+                images_needing_images.append(img_file)
+        
+        total_images = len(images_needing_images)
+        logger.info(f"📷 Found {total_images} processed recipes that need images generated")
+        
+        if total_images == 0:
+            logger.info("✅ All processed recipes already have images!")
+            return
+        
+        # Apply limit if specified
+        if limit:
+            total_images = min(total_images, limit)
+            logger.info(f"📊 Limiting to {limit} images")
+        
+        # Process in batches
+        for i in range(0, total_images, batch_size):
+            batch = images_needing_images[i:i + batch_size]
+            logger.info(f"🖼️  Generating images for batch {i//batch_size + 1}: images {i+1}-{min(i+batch_size, total_images)}")
+            
+            for img_file in batch:
+                img_path = os.path.join(IMAGE_DIR, img_file)
+                self.generate_images_for_single_recipe(img_path)
+                time.sleep(2)  # Rate limiting
+            
+            logger.info(f"⏸️  Batch complete. Images generated: {self.processed_count}, Failed: {self.failed_count}")
+            
+            if i + batch_size < total_images:
+                logger.info("⏳ Waiting 30 seconds before next batch...")
+                time.sleep(30)
+        
+        logger.info(f"🎉 Image generation complete! Generated: {self.processed_count}, Failed: {self.failed_count}")
+    
+    def generate_images_for_single_recipe(self, image_path):
+        """Generate images for a single recipe that has already been processed"""
+        try:
+            image_name = os.path.basename(image_path)
+            logger.info(f"🖼️  Generating images for: {image_name}")
+            
+            # Find the product directory for this recipe
+            product_dir = None
+            for dir_name in os.listdir(PRODUCTS_DIR):
+                dir_path = os.path.join(PRODUCTS_DIR, dir_name)
+                if os.path.isdir(dir_path):
+                    # Check if this directory contains the original image
+                    original_image = f"original-{image_name}"
+                    if os.path.exists(os.path.join(dir_path, original_image)):
+                        product_dir = dir_path
+                        break
+            
+            if not product_dir:
+                logger.error(f"❌ Could not find product directory for {image_name}")
+                self.failed_count += 1
+                return False
+            
+            # Load recipe data from the saved files
+            recipe_file = os.path.join(product_dir, "Recipe.txt")
+            if not os.path.exists(recipe_file):
+                logger.error(f"❌ Recipe file not found for {image_name}")
+                self.failed_count += 1
+                return False
+            
+            # Parse recipe data from the saved file
+            with open(recipe_file, 'r') as f:
+                recipe_text = f.read()
+            
+            # Extract recipe title from the file
+            lines = recipe_text.split('\n')
+            title = "Vintage Recipe"
+            for line in lines:
+                if line.startswith('Title:'):
+                    title = line.replace('Title:', '').strip()
+                    break
+            
+            # Create recipe data structure
+            recipe_data = {
+                'title': title,
+                'ingredients': [],
+                'instructions': [],
+                'servings': 'Unknown',
+                'prep_time': 'Unknown',
+                'cook_time': 'Unknown'
+            }
+            
+            # Extract other details from the file
+            in_ingredients = False
+            in_instructions = False
+            for line in lines:
+                line = line.strip()
+                if line.startswith('Servings:'):
+                    recipe_data['servings'] = line.replace('Servings:', '').strip()
+                elif line.startswith('Prep Time:'):
+                    recipe_data['prep_time'] = line.replace('Prep Time:', '').strip()
+                elif line.startswith('Cook Time:'):
+                    recipe_data['cook_time'] = line.replace('Cook Time:', '').strip()
+                elif line == 'Ingredients:':
+                    in_ingredients = True
+                    in_instructions = False
+                elif line == 'Instructions:':
+                    in_ingredients = False
+                    in_instructions = True
+                elif in_ingredients and line.startswith('- '):
+                    recipe_data['ingredients'].append(line[2:])
+                elif in_instructions and line and line[0].isdigit() and '. ' in line:
+                    recipe_data['instructions'].append(line.split('. ', 1)[1])
+            
+            # Generate slug for the recipe
+            slug = self.slugify(recipe_data['title'])
+            
+            # Generate images
+            success = self.generate_product_images(recipe_data, product_dir, slug, image_path)
+            
+            if success:
+                logger.info(f"✅ Images generated for {recipe_data['title']}")
+                self.processed_count += 1
+                return True
+            else:
+                logger.error(f"❌ Failed to generate images for {recipe_data['title']}")
+                self.failed_count += 1
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to generate images for {os.path.basename(image_path)}: {e}")
+            self.failed_count += 1
+            return False
+    
     def create_master_csv(self):
         """Create master CSV file for all processed recipes"""
         csv_data = []
@@ -1079,6 +1267,7 @@ Examples:
   python recipe_automation_v2.py --all                      # Process all images
   python recipe_automation_v2.py --all --generate-images    # Process all images with AI image generation
   python recipe_automation_v2.py --all --force-reprocess    # Reprocess already processed images
+  python recipe_automation_v2.py --images-only              # Generate images for processed recipes only
   python recipe_automation_v2.py --csv-only                 # Create master CSV only
         """
     )
@@ -1099,6 +1288,11 @@ Examples:
         '--csv-only', 
         action='store_true',
         help='Create master CSV file only'
+    )
+    action_group.add_argument(
+        '--images-only', 
+        action='store_true',
+        help='Generate images only for recipes that have been processed but don\'t have images yet'
     )
     
     # Options for single processing
@@ -1269,13 +1463,21 @@ def main():
             force_reprocess=args.force_reprocess
         )
         
+    elif args.images_only:
+        # Generate images only for processed recipes
+        print("🖼️  Generating images for processed recipes...")
+        processor.generate_images_for_processed_recipes(
+            batch_size=args.batch_size,
+            limit=args.limit
+        )
+        
     elif args.csv_only:
         # Create master CSV only
         print("📊 Creating master CSV...")
         processor.create_master_csv()
     
-    # Create master CSV (unless csv-only mode)
-    if not args.csv_only:
+    # Create master CSV (unless csv-only mode or images-only mode)
+    if not args.csv_only and not args.images_only:
         processor.create_master_csv()
     
     print(f"\n🎉 Processing complete!")
