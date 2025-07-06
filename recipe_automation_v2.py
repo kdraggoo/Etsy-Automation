@@ -35,16 +35,25 @@ load_dotenv()
 API_KEY_FILE = "API_KEY.txt"
 USDA_API_KEY = "o38esmeZRVmEyldklsEzns8h2DBGakvEQNTsMxvV"
 
-if os.path.exists(API_KEY_FILE):
-    with open(API_KEY_FILE, "r") as f:
-        api_key = f.read().strip()
-    client = OpenAI(api_key=api_key)
-else:
-    print("❌ API_KEY.txt not found.")
-    exit(1)
+# Global variables for clients (initialized when needed)
+client = None
+usda_analyzer = None
 
-# Initialize USDA nutrition analyzer
-usda_analyzer = USDANutritionAnalyzer(USDA_API_KEY)
+def initialize_clients():
+    """Initialize OpenAI and USDA clients when needed"""
+    global client, usda_analyzer
+    
+    if client is None:
+        if os.path.exists(API_KEY_FILE):
+            with open(API_KEY_FILE, "r") as f:
+                api_key = f.read().strip()
+            client = OpenAI(api_key=api_key)
+        else:
+            print("❌ API_KEY.txt not found.")
+            exit(1)
+    
+    if usda_analyzer is None:
+        usda_analyzer = USDANutritionAnalyzer(USDA_API_KEY)
 
 # Constants
 IMAGE_DIR = "./Original-Images/"
@@ -63,6 +72,8 @@ class RecipeProcessor:
         self.failed_count = 0
         self.ocr_method = ocr_method
         self.processed_images = self.load_processed_images()
+        # Initialize clients when RecipeProcessor is created
+        initialize_clients()
     
     def load_processed_images(self):
         """Load list of already processed images"""
