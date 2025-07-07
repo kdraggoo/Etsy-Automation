@@ -39,6 +39,9 @@ venv.bak/
 API_KEY.txt
 *.key
 *.pem
+.env
+.env.local
+.env.production
 
 # Logs
 logs/

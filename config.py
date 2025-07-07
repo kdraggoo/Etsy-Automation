@@ -25,7 +25,6 @@ CURRENCY_CODE = "USD"  # Currency for listings
 # File Paths
 IMAGE_DIR = "./Original-Images/"
 PRODUCTS_DIR = "./Products/"
-API_KEY_FILE = "API_KEY.txt"
 
 # Recipe Processing
 MAX_FILENAME_LENGTH = 64

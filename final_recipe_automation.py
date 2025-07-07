@@ -17,13 +17,16 @@ from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 
-# Load API key
-API_KEY_FILE = "API_KEY.txt"
-if os.path.exists(API_KEY_FILE):
-    with open(API_KEY_FILE, "r") as f:
-        openai.api_key = f.read().strip()
+# Load environment variables
+load_dotenv()
+
+# Load API key from environment
+openai_api_key = os.getenv('OPENAI_API_KEY')
+if openai_api_key:
+    openai.api_key = openai_api_key
 else:
-    print("❌ API_KEY.txt not found.")
+    print("❌ OPENAI_API_KEY environment variable not found.")
+    print("   Please set OPENAI_API_KEY in your .env file or environment variables.")
     exit(1)
 
 # Constants

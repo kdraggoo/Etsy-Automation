@@ -35,8 +35,11 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip3 install -r requirements.txt
 
-# Set up API keys
-echo "your-openai-api-key" > API_KEY.txt
+# Set up environment variables
+python3 setup_env.py  # Interactive setup
+# OR manually:
+# cp .env.example .env
+# nano .env  # Edit with your API keys
 ```
 
 ### Basic Usage
@@ -62,7 +65,7 @@ Etsy-Automation/
 ├── recipe_automation_v2.py    # Main automation script
 ├── usda_nutrition.py          # USDA nutrition analysis module
 ├── config.py                  # Configuration settings
-├── API_KEY.txt               # OpenAI API key (not in git)
+├── .env                      # Environment variables (not in git)
 ├── Original-Images/          # Source recipe images
 ├── Products/                 # Generated content
 ├── logs/                     # Processing logs
@@ -117,7 +120,11 @@ For each processed recipe, the system creates:
 
 ### API Keys
 - **OpenAI**: Required for Vision API OCR and content generation
-- **USDA**: Required for nutrition analysis (included in script)
+  - Set `OPENAI_API_KEY` in your `.env` file
+  - Get it from: https://platform.openai.com/api-keys
+- **USDA**: Required for nutrition analysis
+  - Set `USDA_API_KEY` in your `.env` file
+  - Get it from: https://fdc.nal.usda.gov/api-key-signup.html
 
 ### Rate Limiting
 - **Vision API**: Built-in retry logic with exponential backoff

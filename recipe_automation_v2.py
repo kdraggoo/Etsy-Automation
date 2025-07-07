@@ -31,29 +31,80 @@ from usda_nutrition import USDANutritionAnalyzer
 # Load environment variables
 load_dotenv()
 
-# Configuration
-API_KEY_FILE = "API_KEY.txt"
-USDA_API_KEY = "o38esmeZRVmEyldklsEzns8h2DBGakvEQNTsMxvV"
+# Configuration - Get API keys from environment variables
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+USDA_API_KEY = os.getenv('USDA_API_KEY')
 
 # Global variables for clients (initialized when needed)
 client = None
 usda_analyzer = None
+api_error_detected = False  # Global flag to track API errors
 
 def initialize_clients():
     """Initialize OpenAI and USDA clients when needed"""
     global client, usda_analyzer
     
     if client is None:
-        if os.path.exists(API_KEY_FILE):
-            with open(API_KEY_FILE, "r") as f:
-                api_key = f.read().strip()
-            client = OpenAI(api_key=api_key)
+        if OPENAI_API_KEY:
+            client = OpenAI(api_key=OPENAI_API_KEY)
         else:
-            print("❌ API_KEY.txt not found.")
+            print("❌ OPENAI_API_KEY environment variable not found.")
+            print("   Please set OPENAI_API_KEY in your .env file or environment variables.")
             exit(1)
     
     if usda_analyzer is None:
-        usda_analyzer = USDANutritionAnalyzer(USDA_API_KEY)
+        if USDA_API_KEY:
+            usda_analyzer = USDANutritionAnalyzer(USDA_API_KEY)
+        else:
+            print("❌ USDA_API_KEY environment variable not found.")
+            print("   Please set USDA_API_KEY in your .env file or environment variables.")
+            exit(1)
+
+def check_api_error_and_exit(error_message, error_type="API"):
+    """Check if error indicates API limits or unavailability and exit gracefully"""
+    global api_error_detected
+    
+    # Check for rate limit errors
+    rate_limit_indicators = [
+        "rate limit", "rate_limit", "quota exceeded", "quota limit", 
+        "too many requests", "429", "insufficient_quota", "billing_not_active",
+        "account_deactivated", "service_unavailable", "503"
+    ]
+    
+    # Check for authentication errors
+    auth_indicators = [
+        "invalid_api_key", "authentication", "unauthorized", "401", "403"
+    ]
+    
+    # Check for service unavailability
+    service_indicators = [
+        "service_unavailable", "503", "timeout", "connection", "network"
+    ]
+    
+    error_lower = error_message.lower()
+    
+    for indicator in rate_limit_indicators:
+        if indicator in error_lower:
+            logger.error(f"🚫 {error_type} RATE LIMIT REACHED: {error_message}")
+            logger.error("🛑 Stopping processing due to API rate limits")
+            api_error_detected = True
+            return True
+    
+    for indicator in auth_indicators:
+        if indicator in error_lower:
+            logger.error(f"🔐 {error_type} AUTHENTICATION ERROR: {error_message}")
+            logger.error("🛑 Stopping processing due to authentication issues")
+            api_error_detected = True
+            return True
+    
+    for indicator in service_indicators:
+        if indicator in error_lower:
+            logger.error(f"🌐 {error_type} SERVICE UNAVAILABLE: {error_message}")
+            logger.error("🛑 Stopping processing due to service unavailability")
+            api_error_detected = True
+            return True
+    
+    return False
 
 # Constants
 IMAGE_DIR = "./Original-Images/"
@@ -228,7 +279,13 @@ class RecipeProcessor:
                 return extracted_text
                 
         except Exception as e:
-            logger.error(f"Vision API OCR failed on {image_path}: {e}")
+            error_msg = str(e)
+            logger.error(f"Vision API OCR failed on {image_path}: {error_msg}")
+            
+            # Check if this is a critical API error that should stop processing
+            if check_api_error_and_exit(error_msg, "OpenAI Vision API"):
+                return None  # Signal to calling function that processing should stop
+            
             return ""
     
     def ask_gpt(self, prompt, model="gpt-4", temperature=0.4):
@@ -244,7 +301,13 @@ class RecipeProcessor:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"OpenAI error: {e}")
+            error_msg = str(e)
+            logger.error(f"OpenAI error: {error_msg}")
+            
+            # Check if this is a critical API error that should stop processing
+            if check_api_error_and_exit(error_msg, "OpenAI GPT"):
+                return None  # Signal to calling function that processing should stop
+            
             return ""
     
     def generate_image(self, prompt, output_path, size="1024x1024"):
@@ -267,7 +330,13 @@ class RecipeProcessor:
             return True
             
         except Exception as e:
-            logger.error(f"Image generation failed: {e}")
+            error_msg = str(e)
+            logger.error(f"Image generation failed: {error_msg}")
+            
+            # Check if this is a critical API error that should stop processing
+            if check_api_error_and_exit(error_msg, "OpenAI DALL-E"):
+                return None  # Signal to calling function that processing should stop
+            
             return False
     
     def parse_recipe_structure(self, ocr_text):
@@ -301,6 +370,12 @@ class RecipeProcessor:
         """
         
         response = self.ask_gpt(prompt)
+        
+        # Check for API error signal
+        if response is None:
+            logger.error("🛑 Stopping recipe parsing due to API error")
+            return None
+        
         try:
             # Extract JSON from response
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
@@ -477,7 +552,13 @@ class RecipeProcessor:
         Write a compelling description:
         """
         
-        return self.ask_gpt(prompt)
+        response = self.ask_gpt(prompt)
+        
+        # Check for API error signal
+        if response is None:
+            return None
+        
+        return response
     
     def analyze_allergies(self, ingredients):
         """Analyze ingredients for potential allergies"""
@@ -513,6 +594,11 @@ class RecipeProcessor:
         """
         
         response = self.ask_gpt(prompt)
+        
+        # Check for API error signal
+        if response is None:
+            return None
+        
         try:
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
@@ -558,6 +644,11 @@ class RecipeProcessor:
         """
         
         response = self.ask_gpt(prompt)
+        
+        # Check for API error signal
+        if response is None:
+            return None
+        
         try:
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
@@ -632,8 +723,6 @@ class RecipeProcessor:
             except:
                 return {"calories": "Unknown", "fat": "Unknown", "carbs": "Unknown", "protein": "Unknown"}
     
-
-    
     def generate_social_content(self, recipe_data, description):
         """Generate social media content"""
         # Instagram post
@@ -652,6 +741,10 @@ class RecipeProcessor:
         
         instagram_content = self.ask_gpt(instagram_prompt)
         
+        # Check for API error signal
+        if instagram_content is None:
+            return None
+        
         # Pinterest description
         pinterest_prompt = f"""
         Create a Pinterest description for this recipe. Keep it under 500 characters.
@@ -661,6 +754,10 @@ class RecipeProcessor:
         """
         
         pinterest_content = self.ask_gpt(pinterest_prompt)
+        
+        # Check for API error signal
+        if pinterest_content is None:
+            return None
         
         return {
             "instagram": instagram_content,
@@ -711,6 +808,10 @@ class RecipeProcessor:
         
         response = self.ask_gpt(prompt)
         logger.info(f"🤖 AI estimation response: {response[:200]}...")
+        
+        # Check for API error signal
+        if response is None:
+            return None
         
         try:
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
@@ -785,6 +886,11 @@ class RecipeProcessor:
         """
         
         response = self.ask_gpt(prompt)
+        
+        # Check for API error signal
+        if response is None:
+            return None
+        
         tags = [tag.strip() for tag in response.split(',')]
         return tags[:13]  # Etsy allows max 13 tags
     
@@ -931,6 +1037,10 @@ class RecipeProcessor:
         response = self.ask_gpt(prompt)
         logger.info(f"🤖 AI image prompt generation response: {response[:200]}...")
         
+        # Check for API error signal
+        if response is None:
+            return None, None
+        
         try:
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
@@ -967,6 +1077,11 @@ class RecipeProcessor:
             # Get AI-generated coordinated prompts
             main_prompt, serving_prompt = self.generate_coordinated_image_prompts(recipe_data)
             
+            # Check for API error signal
+            if main_prompt is None or serving_prompt is None:
+                logger.error("🛑 Stopping image generation due to API error")
+                return None
+            
             logger.info(f"🎨 AI-generated main image prompt: {main_prompt[:100]}...")
             logger.info(f"🎨 AI-generated serving image prompt: {serving_prompt[:100]}...")
             
@@ -974,9 +1089,19 @@ class RecipeProcessor:
             finished_image_path = os.path.join(product_dir, "image-main.png")
             success1 = self.generate_image(main_prompt, finished_image_path)
             
+            # Check for API error signal
+            if success1 is None:
+                logger.error("🛑 Stopping image generation due to API error")
+                return None
+            
             # Generate serving image
             serving_image_path = os.path.join(product_dir, "image-served.png")
             success2 = self.generate_image(serving_prompt, serving_image_path)
+            
+            # Check for API error signal
+            if success2 is None:
+                logger.error("🛑 Stopping image generation due to API error")
+                return None
             
             if success1 and success2:
                 logger.info(f"🖼️  Coordinated images generated for {recipe_data['title']}")
@@ -1107,6 +1232,10 @@ Suggested Price: $4.99
             # Extract text via OCR using selected method
             if self.ocr_method == 'vision-api':
                 ocr_text = self.extract_text_with_vision_api(image_path)
+                # Check for API error signal
+                if ocr_text is None:
+                    logger.error("🛑 Stopping processing due to API error")
+                    return None
             else:
                 ocr_text = self.extract_text_from_image(image_path)
                 
@@ -1120,6 +1249,12 @@ Suggested Price: $4.99
             
             # Parse recipe structure
             recipe_data = self.parse_recipe_structure(ocr_text)
+            
+            # Check for API error signal
+            if recipe_data is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
+            
             if not recipe_data.get('title') or recipe_data['title'] == "Untitled Recipe":
                 logger.warning(f"Could not extract recipe title from {os.path.basename(image_path)}")
                 self.mark_image_processed(image_path, "Failed - No recipe title", success=False)
@@ -1133,6 +1268,11 @@ Suggested Price: $4.99
             
             # Estimate missing recipe details
             estimated_details = self.estimate_recipe_details(recipe_data)
+            
+            # Check for API error signal
+            if estimated_details is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
             
             # Merge estimated details with original data
             # Use estimated values if original values are missing, None, or "Unknown"
@@ -1200,11 +1340,34 @@ Suggested Price: $4.99
             
             # Generate content
             description = self.generate_recipe_description(recipe_data)
+            if description is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
+            
             allergies = self.analyze_allergies(recipe_data.get('ingredients', []))
+            if allergies is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
+            
             diet_info = self.analyze_diet_compatibility(recipe_data.get('ingredients', []), recipe_data.get('instructions', []))
+            if diet_info is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
+            
             nutrition = self.generate_nutrition_label(recipe_data.get('ingredients', []), recipe_data.get('instructions', []))
+            if nutrition is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
+            
             social_content = self.generate_social_content(recipe_data, description)
+            if social_content is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
+            
             tags = self.generate_tags(recipe_data, description)
+            if tags is None:
+                logger.error("🛑 Stopping processing due to API error")
+                return None
             
             # Save content files
             self.save_content_files(product_dir, recipe_data, description, social_content, tags, nutrition, allergies, diet_info)
@@ -1213,12 +1376,29 @@ Suggested Price: $4.99
             pdf_path = os.path.join(product_dir, f"{slug}_Recipe-Card.pdf")
             self.create_recipe_pdf(recipe_data, nutrition, pdf_path)
             
+            # Check if we have generated images to include in fancy PDF
+            image_paths = []
+            main_image_path = os.path.join(product_dir, "image-main.png")
+            serving_image_path = os.path.join(product_dir, "image-served.png")
+            
+            if os.path.exists(main_image_path):
+                image_paths.append(main_image_path)
+            if os.path.exists(serving_image_path):
+                image_paths.append(serving_image_path)
+            
             fancy_pdf_path = os.path.join(product_dir, f"{slug}_Recipe-Card-fancy.pdf")
-            self.create_recipe_pdf(recipe_data, nutrition, fancy_pdf_path)
+            if image_paths:
+                self.create_fancy_recipe_pdf_with_images(recipe_data, nutrition, fancy_pdf_path, image_paths)
+            else:
+                self.create_fancy_recipe_pdf(recipe_data, nutrition, fancy_pdf_path)
             
             # Generate product images (only if requested)
             if generate_images:
-                self.generate_product_images(recipe_data, product_dir, slug, image_path)
+                result = self.generate_product_images(recipe_data, product_dir, slug, image_path)
+                # Check for API error signal
+                if result is None:
+                    logger.error("🛑 Stopping processing due to API error")
+                    return None
             else:
                 logger.info(f"🖼️  Skipping image generation (use --generate-images to enable)")
             
@@ -1256,7 +1436,13 @@ Suggested Price: $4.99
             
             for img_file in batch:
                 img_path = os.path.join(IMAGE_DIR, img_file)
-                self.process_single_recipe(img_path, generate_images, force_reprocess)
+                result = self.process_single_recipe(img_path, generate_images, force_reprocess)
+                
+                # Check for API error signal
+                if result is None:
+                    logger.error("🛑 Stopping batch processing due to API error")
+                    return
+                
                 time.sleep(2)  # Rate limiting
             
             logger.info(f"⏸️  Batch complete. Processed: {self.processed_count}, Failed: {self.failed_count}")
@@ -1301,7 +1487,13 @@ Suggested Price: $4.99
             
             for img_file in batch:
                 img_path = os.path.join(IMAGE_DIR, img_file)
-                self.generate_images_for_single_recipe(img_path)
+                result = self.generate_images_for_single_recipe(img_path)
+                
+                # Check for API error signal
+                if result is None:
+                    logger.error("🛑 Stopping image generation due to API error")
+                    return
+                
                 time.sleep(2)  # Rate limiting
             
             logger.info(f"⏸️  Batch complete. Images generated: {self.processed_count}, Failed: {self.failed_count}")
@@ -1391,6 +1583,11 @@ Suggested Price: $4.99
             # Generate images
             success = self.generate_product_images(recipe_data, product_dir, slug, image_path)
             
+            # Check for API error signal
+            if success is None:
+                logger.error("🛑 Stopping image generation due to API error")
+                return None
+            
             if success:
                 logger.info(f"✅ Images generated for {recipe_data['title']}")
                 self.processed_count += 1
@@ -1430,6 +1627,490 @@ Suggested Price: $4.99
                     writer.writerow(row)
             
             logger.info(f"📊 Master CSV created: {master_csv_path}")
+
+    def create_fancy_recipe_pdf(self, recipe_data, nutrition, output_path, image_paths=None):
+        """Create a professional, fancy recipe PDF with decorative elements and styling"""
+        try:
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.lib.units import inch
+            from reportlab.pdfgen import canvas
+            from reportlab.lib import colors
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            import math
+            
+            # Ensure ingredients and instructions are strings
+            def stringify(item):
+                if isinstance(item, dict):
+                    if 'ingredient' in item and 'quantity' in item:
+                        return f"{item['quantity']} {item['ingredient']}"
+                    elif 'ingredient' in item:
+                        return item['ingredient']
+                    elif 'quantity' in item:
+                        return item['quantity']
+                    else:
+                        return next(iter(item.values()), str(item))
+                return str(item)
+
+            ingredients = [stringify(ing) for ing in recipe_data.get('ingredients', [])]
+            instructions = [stringify(inst) for inst in recipe_data.get('instructions', [])]
+            
+            # Create the PDF document
+            doc = SimpleDocTemplate(output_path, pagesize=letter, 
+                                  rightMargin=0.5*inch, leftMargin=0.5*inch,
+                                  topMargin=0.5*inch, bottomMargin=0.5*inch)
+            
+            # Define custom styles
+            styles = getSampleStyleSheet()
+            
+            # Title style with decorative elements
+            title_style = ParagraphStyle(
+                'FancyTitle',
+                parent=styles['Heading1'],
+                fontSize=28,
+                spaceAfter=20,
+                alignment=TA_CENTER,
+                textColor=colors.darkred,
+                fontName='Helvetica-Bold'
+            )
+            
+            # Subtitle style
+            subtitle_style = ParagraphStyle(
+                'FancySubtitle',
+                parent=styles['Normal'],
+                fontSize=14,
+                spaceAfter=15,
+                alignment=TA_CENTER,
+                textColor=colors.darkgreen,
+                fontName='Helvetica'
+            )
+            
+            # Section header style
+            section_style = ParagraphStyle(
+                'FancySection',
+                parent=styles['Heading2'],
+                fontSize=18,
+                spaceAfter=10,
+                spaceBefore=15,
+                textColor=colors.darkblue,
+                fontName='Helvetica-Bold'
+            )
+            
+            # Ingredient style
+            ingredient_style = ParagraphStyle(
+                'FancyIngredient',
+                parent=styles['Normal'],
+                fontSize=12,
+                spaceAfter=3,
+                leftIndent=20,
+                fontName='Helvetica'
+            )
+            
+            # Instruction style
+            instruction_style = ParagraphStyle(
+                'FancyInstruction',
+                parent=styles['Normal'],
+                fontSize=12,
+                spaceAfter=8,
+                leftIndent=20,
+                fontName='Helvetica'
+            )
+            
+            # Nutrition style
+            nutrition_style = ParagraphStyle(
+                'FancyNutrition',
+                parent=styles['Normal'],
+                fontSize=10,
+                spaceAfter=5,
+                fontName='Helvetica-Oblique'
+            )
+            
+            story = []
+            
+            # Add decorative header
+            story.append(Paragraph("✧ ✧ ✧", title_style))
+            story.append(Spacer(1, 10))
+            
+            # Recipe title
+            story.append(Paragraph(recipe_data['title'], title_style))
+            story.append(Spacer(1, 15))
+            
+            # Recipe details in a decorative box
+            details_text = f"Servings: {recipe_data.get('servings', 'Unknown')} | Prep Time: {recipe_data.get('prep_time', 'Unknown')} | Cook Time: {recipe_data.get('cook_time', 'Unknown')}"
+            story.append(Paragraph(details_text, subtitle_style))
+            story.append(Spacer(1, 20))
+            
+            # Create two-column layout for ingredients and instructions
+            if ingredients and instructions:
+                # Ingredients column
+                ingredients_story = []
+                ingredients_story.append(Paragraph("Ingredients", section_style))
+                for ingredient in ingredients:
+                    ingredients_story.append(Paragraph(f"• {ingredient}", ingredient_style))
+                
+                # Instructions column
+                instructions_story = []
+                instructions_story.append(Paragraph("Instructions", section_style))
+                for i, instruction in enumerate(instructions, 1):
+                    instructions_story.append(Paragraph(f"{i}. {instruction}", instruction_style))
+                
+                # Create table for two-column layout
+                col_widths = [2.5*inch, 2.5*inch]
+                table_data = [
+                    [ingredients_story, instructions_story]
+                ]
+                
+                recipe_table = Table(table_data, colWidths=col_widths)
+                recipe_table.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 10),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+                    ('TOPPADDING', (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ]))
+                
+                story.append(recipe_table)
+                story.append(Spacer(1, 20))
+            
+            # Nutrition information in a styled box
+            if nutrition and nutrition.get('calories') != "Unknown":
+                story.append(Paragraph("Nutrition Information (per serving)", section_style))
+                
+                # Create nutrition table
+                nutrition_data = [
+                    ['Calories', nutrition.get('calories', 'Unknown')],
+                    ['Fat', nutrition.get('fat', 'Unknown')],
+                    ['Carbohydrates', nutrition.get('carbs', 'Unknown')],
+                    ['Protein', nutrition.get('protein', 'Unknown')]
+                ]
+                
+                if nutrition.get('fiber') != "Unknown":
+                    nutrition_data.append(['Fiber', nutrition.get('fiber', 'Unknown')])
+                if nutrition.get('sugar') != "Unknown":
+                    nutrition_data.append(['Sugar', nutrition.get('sugar', 'Unknown')])
+                if nutrition.get('sodium') != "Unknown":
+                    nutrition_data.append(['Sodium', nutrition.get('sodium', 'Unknown')])
+                
+                nutrition_table = Table(nutrition_data, colWidths=[1.5*inch, 1*inch])
+                nutrition_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 10),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                
+                story.append(nutrition_table)
+                story.append(Spacer(1, 20))
+            
+            # Add decorative footer
+            story.append(Paragraph("✧ ✧ ✧", title_style))
+            story.append(Spacer(1, 10))
+            
+            # Footer note
+            footer_style = ParagraphStyle(
+                'Footer',
+                parent=styles['Normal'],
+                fontSize=8,
+                alignment=TA_CENTER,
+                textColor=colors.grey,
+                fontName='Helvetica-Oblique'
+            )
+            story.append(Paragraph("Digital Recipe Card - Perfect for printing and sharing", footer_style))
+            
+            # Build the PDF
+            doc.build(story)
+            
+            # Add decorative elements using canvas
+            c = canvas.Canvas(output_path)
+            width, height = letter
+            
+            # Add decorative border
+            c.setStrokeColor(colors.darkred)
+            c.setLineWidth(3)
+            c.rect(0.25*inch, 0.25*inch, width-0.5*inch, height-0.5*inch)
+            
+            # Add corner decorations
+            corner_size = 0.5*inch
+            for x, y in [(0.25*inch, height-0.75*inch), (width-0.75*inch, height-0.75*inch),
+                         (0.25*inch, 0.25*inch), (width-0.75*inch, 0.25*inch)]:
+                c.setFillColor(colors.darkred)
+                c.circle(x, y, 0.1*inch, fill=1)
+            
+            # Add side decorations
+            c.setStrokeColor(colors.darkgreen)
+            c.setLineWidth(1)
+            for i in range(5):
+                y = 1*inch + i * 1.5*inch
+                c.line(0.3*inch, y, 0.5*inch, y)
+                c.line(width-0.5*inch, y, width-0.3*inch, y)
+            
+            c.save()
+            
+            logger.info(f"🎨 Fancy PDF created: {output_path}")
+            
+        except Exception as e:
+            logger.error(f"Fancy PDF creation error: {e}")
+            # Fallback to regular PDF if fancy creation fails
+            self.create_recipe_pdf(recipe_data, nutrition, output_path)
+
+    def create_fancy_recipe_pdf_with_images(self, recipe_data, nutrition, output_path, image_paths=None):
+        """Create a professional, fancy recipe PDF with integrated images"""
+        try:
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.lib.units import inch
+            from reportlab.pdfgen import canvas
+            from reportlab.lib import colors
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            import math
+            import os
+            
+            # Ensure ingredients and instructions are strings
+            def stringify(item):
+                if isinstance(item, dict):
+                    if 'ingredient' in item and 'quantity' in item:
+                        return f"{item['quantity']} {item['ingredient']}"
+                    elif 'ingredient' in item:
+                        return item['ingredient']
+                    elif 'quantity' in item:
+                        return item['quantity']
+                    else:
+                        return next(iter(item.values()), str(item))
+                return str(item)
+
+            ingredients = [stringify(ing) for ing in recipe_data.get('ingredients', [])]
+            instructions = [stringify(inst) for inst in recipe_data.get('instructions', [])]
+            
+            # Create the PDF document
+            doc = SimpleDocTemplate(output_path, pagesize=letter, 
+                                  rightMargin=0.5*inch, leftMargin=0.5*inch,
+                                  topMargin=0.5*inch, bottomMargin=0.5*inch)
+            
+            # Define custom styles
+            styles = getSampleStyleSheet()
+            
+            # Title style with decorative elements
+            title_style = ParagraphStyle(
+                'FancyTitle',
+                parent=styles['Heading1'],
+                fontSize=28,
+                spaceAfter=20,
+                alignment=TA_CENTER,
+                textColor=colors.darkred,
+                fontName='Helvetica-Bold'
+            )
+            
+            # Subtitle style
+            subtitle_style = ParagraphStyle(
+                'FancySubtitle',
+                parent=styles['Normal'],
+                fontSize=14,
+                spaceAfter=15,
+                alignment=TA_CENTER,
+                textColor=colors.darkgreen,
+                fontName='Helvetica'
+            )
+            
+            # Section header style
+            section_style = ParagraphStyle(
+                'FancySection',
+                parent=styles['Heading2'],
+                fontSize=18,
+                spaceAfter=10,
+                spaceBefore=15,
+                textColor=colors.darkblue,
+                fontName='Helvetica-Bold'
+            )
+            
+            # Ingredient style
+            ingredient_style = ParagraphStyle(
+                'FancyIngredient',
+                parent=styles['Normal'],
+                fontSize=12,
+                spaceAfter=3,
+                leftIndent=20,
+                fontName='Helvetica'
+            )
+            
+            # Instruction style
+            instruction_style = ParagraphStyle(
+                'FancyInstruction',
+                parent=styles['Normal'],
+                fontSize=12,
+                spaceAfter=8,
+                leftIndent=20,
+                fontName='Helvetica'
+            )
+            
+            story = []
+            
+            # Add decorative header
+            story.append(Paragraph("✧ ✧ ✧", title_style))
+            story.append(Spacer(1, 10))
+            
+            # Recipe title
+            story.append(Paragraph(recipe_data['title'], title_style))
+            story.append(Spacer(1, 15))
+            
+            # Recipe details
+            details_text = f"Servings: {recipe_data.get('servings', 'Unknown')} | Prep Time: {recipe_data.get('prep_time', 'Unknown')} | Cook Time: {recipe_data.get('cook_time', 'Unknown')}"
+            story.append(Paragraph(details_text, subtitle_style))
+            story.append(Spacer(1, 20))
+            
+            # Add main image if available
+            if image_paths and len(image_paths) > 0 and os.path.exists(image_paths[0]):
+                try:
+                    main_image = Image(image_paths[0], width=3*inch, height=2.5*inch)
+                    main_image.hAlign = 'CENTER'
+                    story.append(main_image)
+                    story.append(Spacer(1, 15))
+                except Exception as e:
+                    logger.warning(f"Could not add main image: {e}")
+            
+            # Create two-column layout for ingredients and instructions
+            if ingredients and instructions:
+                # Ingredients column
+                ingredients_story = []
+                ingredients_story.append(Paragraph("Ingredients", section_style))
+                for ingredient in ingredients:
+                    ingredients_story.append(Paragraph(f"• {ingredient}", ingredient_style))
+                
+                # Instructions column
+                instructions_story = []
+                instructions_story.append(Paragraph("Instructions", section_style))
+                for i, instruction in enumerate(instructions, 1):
+                    instructions_story.append(Paragraph(f"{i}. {instruction}", instruction_style))
+                
+                # Create table for two-column layout
+                col_widths = [2.5*inch, 2.5*inch]
+                table_data = [
+                    [ingredients_story, instructions_story]
+                ]
+                
+                recipe_table = Table(table_data, colWidths=col_widths)
+                recipe_table.setStyle(TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 10),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+                    ('TOPPADDING', (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ]))
+                
+                story.append(recipe_table)
+                story.append(Spacer(1, 20))
+            
+            # Add serving image if available
+            if image_paths and len(image_paths) > 1 and os.path.exists(image_paths[1]):
+                try:
+                    serving_image = Image(image_paths[1], width=2.5*inch, height=2*inch)
+                    serving_image.hAlign = 'CENTER'
+                    story.append(serving_image)
+                    story.append(Spacer(1, 15))
+                except Exception as e:
+                    logger.warning(f"Could not add serving image: {e}")
+            
+            # Nutrition information in a styled box
+            if nutrition and nutrition.get('calories') != "Unknown":
+                story.append(Paragraph("Nutrition Information (per serving)", section_style))
+                
+                # Create nutrition table
+                nutrition_data = [
+                    ['Calories', nutrition.get('calories', 'Unknown')],
+                    ['Fat', nutrition.get('fat', 'Unknown')],
+                    ['Carbohydrates', nutrition.get('carbs', 'Unknown')],
+                    ['Protein', nutrition.get('protein', 'Unknown')]
+                ]
+                
+                if nutrition.get('fiber') != "Unknown":
+                    nutrition_data.append(['Fiber', nutrition.get('fiber', 'Unknown')])
+                if nutrition.get('sugar') != "Unknown":
+                    nutrition_data.append(['Sugar', nutrition.get('sugar', 'Unknown')])
+                if nutrition.get('sodium') != "Unknown":
+                    nutrition_data.append(['Sodium', nutrition.get('sodium', 'Unknown')])
+                
+                nutrition_table = Table(nutrition_data, colWidths=[1.5*inch, 1*inch])
+                nutrition_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 10),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                
+                story.append(nutrition_table)
+                story.append(Spacer(1, 20))
+            
+            # Add decorative footer
+            story.append(Paragraph("✧ ✧ ✧", title_style))
+            story.append(Spacer(1, 10))
+            
+            # Footer note
+            footer_style = ParagraphStyle(
+                'Footer',
+                parent=styles['Normal'],
+                fontSize=8,
+                alignment=TA_CENTER,
+                textColor=colors.grey,
+                fontName='Helvetica-Oblique'
+            )
+            story.append(Paragraph("Digital Recipe Card - Perfect for printing and sharing", footer_style))
+            
+            # Build the PDF
+            doc.build(story)
+            
+            # Add decorative elements using canvas
+            c = canvas.Canvas(output_path)
+            width, height = letter
+            
+            # Add decorative border
+            c.setStrokeColor(colors.darkred)
+            c.setLineWidth(3)
+            c.rect(0.25*inch, 0.25*inch, width-0.5*inch, height-0.5*inch)
+            
+            # Add corner decorations
+            corner_size = 0.5*inch
+            for x, y in [(0.25*inch, height-0.75*inch), (width-0.75*inch, height-0.75*inch),
+                         (0.25*inch, 0.25*inch), (width-0.75*inch, 0.25*inch)]:
+                c.setFillColor(colors.darkred)
+                c.circle(x, y, 0.1*inch, fill=1)
+            
+            # Add side decorations
+            c.setStrokeColor(colors.darkgreen)
+            c.setLineWidth(1)
+            for i in range(5):
+                y = 1*inch + i * 1.5*inch
+                c.line(0.3*inch, y, 0.5*inch, y)
+                c.line(width-0.5*inch, y, width-0.3*inch, y)
+            
+            c.save()
+            
+            logger.info(f"🎨 Fancy PDF with images created: {output_path}")
+            
+        except Exception as e:
+            logger.error(f"Fancy PDF with images creation error: {e}")
+            # Fallback to regular fancy PDF if image integration fails
+            self.create_fancy_recipe_pdf(recipe_data, nutrition, output_path)
 
 def parse_arguments():
     """Parse command line arguments"""

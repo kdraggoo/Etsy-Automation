@@ -80,15 +80,31 @@ def install_tesseract():
         print(f"❌ Unsupported platform: {system}")
         return False
 
-def check_api_key():
-    """Check if API key file exists"""
-    if os.path.exists("API_KEY.txt"):
-        print("✅ API key file found")
-        return True
+def check_api_keys():
+    """Check if API key environment variables exist"""
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    openai_key = os.getenv('OPENAI_API_KEY')
+    usda_key = os.getenv('USDA_API_KEY')
+    
+    all_good = True
+    
+    if openai_key:
+        print("✅ OpenAI API key found in environment")
     else:
-        print("❌ API key file not found")
-        print("   Please create API_KEY.txt with your OpenAI API key")
-        return False
+        print("❌ OpenAI API key not found in environment")
+        print("   Please set OPENAI_API_KEY in your .env file or environment variables")
+        all_good = False
+    
+    if usda_key:
+        print("✅ USDA API key found in environment")
+    else:
+        print("❌ USDA API key not found in environment")
+        print("   Please set USDA_API_KEY in your .env file or environment variables")
+        all_good = False
+    
+    return all_good
 
 def create_directories():
     """Create necessary directories"""
@@ -138,10 +154,10 @@ def main():
             print("⚠️  Tesseract installation failed. Please install manually.")
             print("   You can still run the system, but OCR may not work.")
     
-    # Check API key
-    if not check_api_key():
-        print("⚠️  Please add your OpenAI API key to API_KEY.txt")
-        print("   You can still run the system, but content generation won't work.")
+    # Check API keys
+    if not check_api_keys():
+        print("⚠️  Please set your API keys in environment variables")
+        print("   You can still run the system, but some features won't work.")
     
     # Create directories
     create_directories()
@@ -155,17 +171,18 @@ def main():
     else:
         print("❌ Tesseract OCR: Not installed")
     
-    if check_api_key():
-        print("✅ API Key: Ready")
+    if check_api_keys():
+        print("✅ API Keys: Ready")
     else:
-        print("❌ API Key: Missing")
+        print("❌ API Keys: Missing")
     
     print("✅ Python Dependencies: Installed")
     print("✅ Directories: Created")
     
     # Final instructions
     print("\n📋 Next Steps:")
-    print("1. Add your OpenAI API key to API_KEY.txt")
+    print("1. Set your OpenAI API key in environment variables:")
+    print("   echo 'OPENAI_API_KEY=your-api-key-here' >> .env")
     print("2. Place recipe images in the Original-Images/ directory")
     print("3. Run: python test_system.py")
     print("4. If tests pass, run: python recipe_automation_v2.py")
